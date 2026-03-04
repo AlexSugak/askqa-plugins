@@ -179,6 +179,7 @@ server.registerTool(
   "list_templates",
   {
     description: "List available test templates. Returns template IDs, names, descriptions, and steps.",
+    readOnlyHint: true,
   },
   async () => {
     try {
@@ -194,6 +195,7 @@ server.registerTool(
   "create_test",
   {
     description: "Create a saved test. Use template_id for built-in templates, or code for custom Playwright tests. Provide one or the other, not both.",
+    destructiveHint: true,
     inputSchema: {
       name: z.string().describe("A name for this test (e.g. 'Homepage health check')"),
       url: z.string().describe("The target URL to test (e.g. 'https://example.com')"),
@@ -220,6 +222,7 @@ server.registerTool(
   "screenshot_url",
   {
     description: "Take a screenshot of a URL and extract page structure (links, buttons, inputs, headings with selectors). Use this BEFORE writing custom test code to see the page layout and discover available selectors.",
+    readOnlyHint: true,
     inputSchema: {
       url: z.string().describe("The URL to screenshot (e.g. 'https://example.com')"),
     },
@@ -280,6 +283,7 @@ server.registerTool(
   "validate_test",
   {
     description: "Dry-run custom Playwright test code against a URL. Returns execution results, screenshots, and page structure for debugging. Steps continue even on failure to maximize debug signal. Use this to iterate on code before calling create_test.",
+    readOnlyHint: true,
     inputSchema: {
       code: z.string().describe("Custom Playwright test code. Must define an async function test({ page, step, log })."),
       url: z.string().describe("The target URL to test against (e.g. 'https://example.com')"),
@@ -349,6 +353,7 @@ server.registerTool(
   "list_tests",
   {
     description: "List all saved tests for the current organization. Returns id, name, url, template_id, status, and last_run summary (id, status, completed_at). This is the best starting point when checking if a feature or site is working — find the relevant test, then use get_test_results to see details.",
+    readOnlyHint: true,
   },
   async () => {
     try {
@@ -364,6 +369,7 @@ server.registerTool(
   "get_test",
   {
     description: "Get full details of a test by ID, including code for custom tests. Use list_tests to find the test ID first.",
+    readOnlyHint: true,
     inputSchema: {
       test_id: z.coerce.number().describe("The test ID (from list_tests or create_test)"),
     },
@@ -382,6 +388,7 @@ server.registerTool(
   "update_test",
   {
     description: "Update an existing test's name, URL, code, or other properties. Only provided fields are changed.",
+    destructiveHint: true,
     inputSchema: {
       test_id: z.coerce.number().describe("The test ID to update (from list_tests or get_test)"),
       name: z.string().optional().describe("New test name"),
@@ -411,6 +418,7 @@ server.registerTool(
   "delete_test",
   {
     description: "Permanently delete a test and its associated schedules. IMPORTANT: Always call this first WITHOUT confirm to see what will be deleted, show that to the user, and only call again with confirm=true after the user explicitly agrees.",
+    destructiveHint: true,
     inputSchema: {
       test_id: z.coerce.number().describe("The test ID to delete (from list_tests)"),
       confirm: z.boolean().optional().describe("Set to true to actually delete. Omit or false to preview what will be deleted."),
@@ -461,6 +469,7 @@ server.registerTool(
   "run_test",
   {
     description: "Run a saved test by ID. Waits for the test to finish and returns full results with step details.",
+    destructiveHint: true,
     inputSchema: {
       test_id: z.coerce.number().describe("The test ID to run (from create_test or list_tests)"),
     },
@@ -482,6 +491,7 @@ server.registerTool(
   "get_test_screenshots",
   {
     description: "Get screenshots from a test run. Returns only images. Use after run_test or get_test_results to view screenshots.",
+    readOnlyHint: true,
     inputSchema: {
       test_run_id: z.coerce.number().describe("The test run ID (from run_test or get_test_results)"),
     },
@@ -507,6 +517,7 @@ server.registerTool(
   "schedule_test",
   {
     description: "Create a recurring schedule for a saved test. The test will run automatically at the specified interval.",
+    destructiveHint: true,
     inputSchema: {
       test_id: z.coerce.number().describe("The test ID to schedule (from create_test or list_tests)"),
       interval: z.enum(["every_minute", "hourly", "every_6_hours", "every_12_hours", "daily", "weekly"])
@@ -534,6 +545,7 @@ server.registerTool(
   "list_schedules",
   {
     description: "List all test schedules for the current organization, including last run status and next run time.",
+    readOnlyHint: true,
   },
   async () => {
     try {
@@ -563,6 +575,7 @@ server.registerTool(
   "update_schedule",
   {
     description: "Pause or resume a test schedule.",
+    destructiveHint: true,
     inputSchema: {
       schedule_id: z.coerce.number().describe("The schedule ID (from list_schedules)"),
       enabled: z.boolean().describe("true to resume, false to pause"),
@@ -588,6 +601,7 @@ server.registerTool(
   "delete_schedule",
   {
     description: "Permanently delete a test schedule. Historical run results are preserved.",
+    destructiveHint: true,
     inputSchema: {
       schedule_id: z.coerce.number().describe("The schedule ID to delete (from list_schedules)"),
     },
@@ -606,6 +620,7 @@ server.registerTool(
   "get_test_results",
   {
     description: "Get recent test run results with step-by-step details. Use this to answer questions like 'is X working?' — filter by test_id to see the latest runs for a specific test. Shows status, timing, step pass/fail, errors, and screenshot links.",
+    readOnlyHint: true,
     inputSchema: {
       test_id: z.coerce.number().optional().describe("Filter by test ID (optional — omit to see all runs)"),
       limit: z.coerce.number().optional().describe("Max results to return (default: 10)"),
@@ -638,6 +653,7 @@ server.registerTool(
   "add_notification_channel",
   {
     description: "Add a notification channel to receive alerts when scheduled tests fail. Supports email, Telegram, and Slack. For Telegram, get a chat ID from https://t.me/userinfobot. For Slack, create an Incoming Webhook in your Slack workspace settings.",
+    destructiveHint: true,
     inputSchema: {
       channel_type: z.enum(["email", "telegram", "slack"]).describe("The notification channel type"),
       email_address: z.string().optional().describe("Email address for email channels (required when channel_type is email)"),
@@ -696,6 +712,7 @@ server.registerTool(
   "list_notification_channels",
   {
     description: "List all notification channels configured for the current organization.",
+    readOnlyHint: true,
   },
   async () => {
     try {
@@ -727,6 +744,7 @@ server.registerTool(
   "remove_notification_channel",
   {
     description: "Remove a notification channel. Use list_notification_channels to find the channel ID.",
+    destructiveHint: true,
     inputSchema: {
       channel_id: z.coerce.number().describe("The channel ID to remove (from list_notification_channels)"),
     },
@@ -745,6 +763,7 @@ server.registerTool(
   "test_notification_channel",
   {
     description: "Send a test notification to verify a channel is working correctly.",
+    destructiveHint: true,
     inputSchema: {
       channel_id: z.coerce.number().describe("The channel ID to test (from list_notification_channels)"),
     },

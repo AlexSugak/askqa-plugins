@@ -1,0 +1,145 @@
+{
+  "manifest_version": "0.2",
+  "name": "askqa",
+  "version": "1.0.8",
+  "display_name": "AskQA",
+  "author": {
+    "name": "AskQA"
+  },
+  "icon": "icon.png",
+  "description": "Automated website testing and monitoring via MCP",
+  "long_description": "Create and manage automated tests for your websites using natural language. Monitor critical flows like checkout, login, and add-to-cart. Get notified when tests fail.\n\nSecurity: This extension only makes HTTPS requests to api.askqa.ai. It does not read or write files on your computer.\n\nPrivacy Policy: https://askqa.ai/privacy",
+  "homepage": "https://askqa.ai",
+  "documentation": "https://askqa.ai/docs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexSugak/askqa-plugins"
+  },
+  "support": "https://github.com/AlexSugak/askqa-plugins/issues",
+  "privacy_policies": [
+    "https://askqa.ai/privacy"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "testing",
+    "monitoring",
+    "playwright",
+    "e2e",
+    "qa"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server.js"
+      ],
+      "env": {
+        "AUTOQA_API_URL": "${user_config.api_url}",
+        "AUTOQA_API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "API Key",
+      "description": "Your AskQA API key from https://askqa.ai/account",
+      "required": true,
+      "sensitive": true
+    },
+    "api_url": {
+      "type": "string",
+      "title": "API URL",
+      "description": "AskQA API endpoint (leave default for production)",
+      "required": false,
+      "default": "https://api.askqa.ai"
+    }
+  },
+  "tools": [
+    {
+      "name": "list_templates",
+      "description": "List available test templates with IDs, names, descriptions, and steps"
+    },
+    {
+      "name": "create_test",
+      "description": "Create a saved test using template or custom Playwright code"
+    },
+    {
+      "name": "screenshot_url",
+      "description": "Take screenshot of URL and extract page structure (links, buttons, inputs)"
+    },
+    {
+      "name": "validate_test",
+      "description": "Dry-run custom Playwright test code to debug before creating test"
+    },
+    {
+      "name": "list_tests",
+      "description": "List all saved tests with status and last run summary"
+    },
+    {
+      "name": "get_test",
+      "description": "Get full details of a test by ID, including code"
+    },
+    {
+      "name": "update_test",
+      "description": "Update existing test's name, URL, code, or other properties"
+    },
+    {
+      "name": "delete_test",
+      "description": "Permanently delete a test and its schedules"
+    },
+    {
+      "name": "run_test",
+      "description": "Run a saved test and wait for results with step details"
+    },
+    {
+      "name": "get_test_screenshots",
+      "description": "Get screenshots from a test run (images only)"
+    },
+    {
+      "name": "schedule_test",
+      "description": "Create recurring schedule for automated test runs"
+    },
+    {
+      "name": "list_schedules",
+      "description": "List all test schedules with last run and next run time"
+    },
+    {
+      "name": "update_schedule",
+      "description": "Pause or resume a test schedule"
+    },
+    {
+      "name": "delete_schedule",
+      "description": "Permanently delete a test schedule"
+    },
+    {
+      "name": "get_test_results",
+      "description": "Get recent test run results with step-by-step details"
+    },
+    {
+      "name": "add_notification_channel",
+      "description": "Add notification channel for test failure alerts (email, Telegram, Slack)"
+    },
+    {
+      "name": "list_notification_channels",
+      "description": "List all configured notification channels"
+    },
+    {
+      "name": "remove_notification_channel",
+      "description": "Remove a notification channel by ID"
+    },
+    {
+      "name": "test_notification_channel",
+      "description": "Send test notification to verify channel is working"
+    }
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ]
+  }
+}
