@@ -20929,10 +20929,11 @@ async function fetchScreenshot(url) {
     return null;
   }
 }
-function buildTestRunText(testRun) {
+function buildTestRunText(testRun, testName) {
   const icon = testRun.status === "completed" ? "\u2713" : testRun.status === "failed" ? "\u2717" : "\u2026";
+  const testLabel = testName ? `${testName} (#${testRun.test_id})` : `${testRun.test_id}`;
   const lines = [
-    `${icon} Run #${testRun.id} | Test: ${testRun.test_id} | ${testRun.trigger_type} | ${testRun.status}`
+    `${icon} Run #${testRun.id} | ${testLabel} | ${testRun.trigger_type} | ${testRun.status}`
   ];
   if (testRun.result?.durationMs) {
     lines.push(`  Duration: ${(testRun.result.durationMs / 1e3).toFixed(1)}s`);
@@ -21021,15 +21022,19 @@ server.registerTool(
       url: external_exports.string().describe("The target URL to test (e.g. 'https://example.com')"),
       template_id: external_exports.string().optional().describe("Template ID from list_templates (e.g. 'quick-checks'). Omit if using code."),
       params: external_exports.record(external_exports.string()).optional().describe("Optional template parameters"),
-      code: external_exports.string().optional().describe("Custom Playwright test code. Must define an async function test({ page, step, log }). Omit if using template_id.")
+      code: external_exports.string().optional().describe("Custom Playwright test code. Must define an async function test({ page, step, log, secrets }). Omit if using template_id."),
+      secrets: external_exports.record(external_exports.string()).optional().describe("Optional key-value secrets (e.g. { email: '...', password: '...' } or { api_key: '...' }). Encrypted at rest, never returned in API responses."),
+      headers: external_exports.record(external_exports.string()).optional().describe("Optional HTTP headers injected into requests to the target domain (e.g. { 'X-Test-Secret': 'abc' })")
     }
   },
-  async ({ name, url, template_id, params, code }) => {
+  async ({ name, url, template_id, params, code, secrets, headers }) => {
     try {
       const body = { name, url };
       if (template_id) body.template_id = template_id;
       if (params) body.params = params;
       if (code) body.code = code;
+      if (secrets) body.secrets = secrets;
+      if (headers) body.headers = headers;
       const test = await apiPost("/api/tests/create", body);
       return { content: [{ type: "text", text: JSON.stringify(test, null, 2) }] };
     } catch (err) {
@@ -21196,10 +21201,12 @@ server.registerTool(
       url: external_exports.string().optional().describe("New target URL"),
       code: external_exports.string().optional().describe("Updated custom Playwright test code"),
       template_id: external_exports.string().optional().describe("Updated template ID"),
-      params: external_exports.record(external_exports.string()).optional().describe("Updated template parameters")
+      params: external_exports.record(external_exports.string()).optional().describe("Updated template parameters"),
+      secrets: external_exports.record(external_exports.string()).nullable().optional().describe("Updated secrets (pass null to clear)"),
+      headers: external_exports.record(external_exports.string()).nullable().optional().describe("Updated HTTP headers (pass null to clear)")
     }
   },
-  async ({ test_id, name, url, code, template_id, params }) => {
+  async ({ test_id, name, url, code, template_id, params, secrets, headers }) => {
     try {
       const body = {};
       if (name !== void 0) body.name = name;
@@ -21207,6 +21214,8 @@ server.registerTool(
       if (code !== void 0) body.code = code;
       if (template_id !== void 0) body.template_id = template_id;
       if (params !== void 0) body.params = params;
+      if (secrets !== void 0) body.secrets = secrets;
+      if (headers !== void 0) body.headers = headers;
       const test = await apiPatch(`/api/tests/${test_id}`, body);
       return { content: [{ type: "text", text: JSON.stringify(test, null, 2) }] };
     } catch (err) {
@@ -21270,10 +21279,11 @@ server.registerTool(
   },
   async ({ test_id }) => {
     try {
+      const test = await apiGet(`/api/tests/${test_id}`);
       const { test_run_id } = await apiPost(`/api/tests/${test_id}/run`, {});
       console.error(`Started test run ${test_run_id} for test ${test_id}`);
       const testRun = await pollTestRun(test_run_id);
-      const text = buildTestRunText(testRun);
+      const text = buildTestRunText(testRun, test.name);
       return { content: [{ type: "text", text }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
@@ -21422,9 +21432,15 @@ server.registerTool(
       if (!data.test_runs.length) {
         return { content: [{ type: "text", text: "No test runs found." }] };
       }
+      const testIds = [...new Set(data.test_runs.map((r) => r.test_id))];
+      const nameMap = {};
+      const testsData = await apiGet("/api/tests/list");
+      for (const t of testsData.tests) {
+        if (testIds.includes(t.id)) nameMap[t.id] = t.name;
+      }
       const lines = [];
       for (const run of data.test_runs) {
-        lines.push(buildTestRunText(run));
+        lines.push(buildTestRunText(run, nameMap[run.test_id]));
         lines.push("");
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -21550,6 +21566,40 @@ server.registerTool(
     try {
       await apiPost(`/api/notification-channels/${channel_id}/test`, {});
       return { content: [{ type: "text", text: `Test notification sent to channel ${channel_id}.` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    }
+  }
+);
+server.registerTool(
+  "get_org_secret",
+  {
+    description: "Get the org's X-AskQA-Secret header value. This token is automatically sent with every test request so your backend can detect monitoring traffic and enable test mode (e.g. Stripe sandbox).",
+    readOnlyHint: true
+  },
+  async () => {
+    try {
+      const data = await apiGet("/api/org/secret");
+      return { content: [{ type: "text", text: `Your X-AskQA-Secret header value: ${data.askqa_secret}
+
+This is sent automatically with every test request to your target domain. Configure your backend to check for this header to enable test mode.` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    }
+  }
+);
+server.registerTool(
+  "rotate_org_secret",
+  {
+    description: "Generate a new X-AskQA-Secret header value. The old value will stop working immediately \u2014 update your backend configuration.",
+    destructiveHint: true
+  },
+  async () => {
+    try {
+      const data = await apiPost("/api/org/secret/rotate", {});
+      return { content: [{ type: "text", text: `New X-AskQA-Secret header value: ${data.askqa_secret}
+
+Update your backend configuration to use this new value. The old value no longer works.` }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
     }

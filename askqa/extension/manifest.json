@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.2",
   "name": "askqa",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "display_name": "AskQA",
   "author": {
     "name": "AskQA"
@@ -13,9 +13,9 @@
   "documentation": "https://askqa.ai/docs",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AlexSugak/askqa-plugins"
+    "url": "https://github.com/askqa-ai/askqa-plugins"
   },
-  "support": "https://github.com/AlexSugak/askqa-plugins/issues",
+  "support": "https://github.com/askqa-ai/askqa-plugins/issues",
   "privacy_policies": [
     "https://askqa.ai/privacy"
   ],
