@@ -20993,20 +20993,103 @@ var server = new McpServer(
       "your FIRST step should be to call list_tests to find a matching test by name or URL,",
       "then call get_test_results for that test to check the latest run status and step details.",
       "If the latest run passed, confirm it's working. If it failed, report what failed.",
-      "Only call run_test if the user explicitly asks to run a new test \u2014 checking status should use existing results."
+      "Only call run_test if the user explicitly asks to run a new test \u2014 checking status should use existing results.",
+      "",
+      "When the user asks to monitor a site, use list_templates to see available templates.",
+      "There are two kinds of templates:",
+      "",
+      "1. Universal templates (e.g. 'quick-checks') \u2014 work on any website with no configuration.",
+      "   Just call create_test with template_id and you're done.",
+      "",
+      "2. Site-specific templates (e.g. 'shopify-cart') \u2014 need to discover CSS selectors for the target site.",
+      "   Call detect_template first to probe the site and generate standalone Playwright code,",
+      "   then call create_test with that generated code (not the template_id).",
+      "   Templates that support detection have supportsDetection: true in list_templates output."
     ].join("\n")
   }
 );
 server.registerTool(
   "list_templates",
   {
-    description: "List available test templates. Returns template IDs, names, descriptions, and steps.",
+    description: "List available test templates with usage hints. Some templates work directly with create_test (universal), others need detect_template first to discover site-specific selectors (site-specific).",
     readOnlyHint: true
   },
   async () => {
     try {
       const data = await apiGet("/api/tests/templates");
-      return { content: [{ type: "text", text: JSON.stringify(data.templates, null, 2) }] };
+      const lines = [];
+      for (const t of data.templates) {
+        lines.push(`${t.id}`);
+        lines.push(`  Name: ${t.name}`);
+        lines.push(`  Description: ${t.description}`);
+        lines.push(`  Steps: ${t.steps.join(", ")}`);
+        if (t.supportsCodeGeneration) {
+          lines.push(`  supportsDetection: true`);
+          lines.push(`  Usage: call detect_template \u2192 get generated code \u2192 create_test with code`);
+        } else {
+          lines.push(`  Usage: call create_test with template_id="${t.id}" directly`);
+        }
+        lines.push("");
+      }
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    }
+  }
+);
+server.registerTool(
+  "detect_template",
+  {
+    description: "Run template detection against a URL to discover selectors and generate custom test code. This is the fastest way to create a custom test \u2014 detection runs the template flow against the site, discovers which CSS selectors work, and generates standalone Playwright test code with those selectors baked in. Use the generated code with create_test to save it.",
+    readOnlyHint: true,
+    inputSchema: {
+      template_id: external_exports.string().describe("Template ID from list_templates (e.g. 'shopify-cart')"),
+      url: external_exports.string().describe("The target URL to detect against (e.g. 'https://my-store.myshopify.com')")
+    }
+  },
+  async ({ template_id, url }) => {
+    try {
+      const result = await apiPost(`/api/tests/templates/${template_id}/detect`, { url });
+      const content = [];
+      const lines = [];
+      const statusLabel = result.status === "passed" ? "PASSED" : "FAILED";
+      lines.push(`Detection: ${statusLabel}`);
+      lines.push("");
+      if (result.steps) {
+        lines.push("Steps:");
+        for (const step of result.steps) {
+          const icon = step.status === "passed" ? "+" : "x";
+          lines.push(`  ${icon} ${step.name} \u2014 ${step.status}`);
+          if (step.error) lines.push(`    Error: ${step.error}`);
+        }
+        lines.push("");
+      }
+      if (result.selectors) {
+        lines.push("Discovered selectors:");
+        for (const [key, value] of Object.entries(result.selectors)) {
+          lines.push(`  ${key}: ${value}`);
+        }
+        lines.push("");
+      }
+      if (result.code) {
+        lines.push("Generated test code (use with create_test):");
+        lines.push("```");
+        lines.push(result.code);
+        lines.push("```");
+      }
+      content.push({ type: "text", text: lines.join("\n") });
+      if (result.steps) {
+        for (const step of result.steps) {
+          if (!step.screenshot) continue;
+          const screenshotUrl = `${API_URL}/api/screenshots/${result.executionId}/${step.screenshot}`;
+          const base642 = await fetchScreenshot(screenshotUrl);
+          if (base642) {
+            content.push({ type: "text", text: `Screenshot: ${step.name}` });
+            content.push({ type: "image", data: base642, mimeType: "image/png" });
+          }
+        }
+      }
+      return { content };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
     }
@@ -21015,7 +21098,7 @@ server.registerTool(
 server.registerTool(
   "create_test",
   {
-    description: "Create a saved test. Use template_id for built-in templates, or code for custom Playwright tests. Provide one or the other, not both.",
+    description: "Create a saved test. Use template_id for universal templates (e.g. 'quick-checks') that work on any site. Use code for custom tests or for site-specific templates after running detect_template. Provide template_id or code, not both.",
     destructiveHint: true,
     inputSchema: {
       name: external_exports.string().describe("A name for this test (e.g. 'Homepage health check')"),
@@ -21204,7 +21287,7 @@ server.registerTool(
       code: external_exports.string().optional().describe("Updated custom Playwright test code"),
       template_id: external_exports.string().optional().describe("Updated template ID"),
       params: external_exports.record(external_exports.string()).optional().describe("Updated template parameters"),
-      secrets: external_exports.record(external_exports.string()).nullable().optional().describe("Updated secrets (pass null to clear)"),
+      secrets: external_exports.record(external_exports.string()).nullable().optional().describe("Updated secrets (pass null to clear). Encrypted at rest, never returned in API responses \u2014 must be provided again when updating a test that uses secrets."),
       headers: external_exports.record(external_exports.string()).nullable().optional().describe("Updated HTTP headers (pass null to clear)"),
       enable_test_mode: external_exports.boolean().optional().describe("Send X-AskQA-Secret header to the target site, enabling test mode on sites that support it (default: true)")
     }
