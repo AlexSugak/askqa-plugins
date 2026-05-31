@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.2",
   "name": "askqa",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "display_name": "AskQA",
   "author": {
     "name": "AskQA"
@@ -117,6 +117,10 @@
     {
       "name": "get_test_results",
       "description": "Get recent test run results with step-by-step details"
+    },
+    {
+      "name": "heal_test",
+      "description": "Diagnose a test that broke after a layout change and help repair its selectors"
     },
     {
       "name": "add_notification_channel",

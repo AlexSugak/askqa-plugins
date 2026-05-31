@@ -21289,10 +21289,12 @@ server.registerTool(
       params: external_exports.record(external_exports.string()).optional().describe("Updated template parameters"),
       secrets: external_exports.record(external_exports.string()).nullable().optional().describe("Updated secrets (pass null to clear). Encrypted at rest, never returned in API responses \u2014 must be provided again when updating a test that uses secrets."),
       headers: external_exports.record(external_exports.string()).nullable().optional().describe("Updated HTTP headers (pass null to clear)"),
-      enable_test_mode: external_exports.boolean().optional().describe("Send X-AskQA-Secret header to the target site, enabling test mode on sites that support it (default: true)")
+      enable_test_mode: external_exports.boolean().optional().describe("Send X-AskQA-Secret header to the target site, enabling test mode on sites that support it (default: true)"),
+      healing_disabled: external_exports.boolean().optional().describe("Set true to stop AskQA from suggesting fixes for this test (e.g. a failing test that's acceptable as-is, or one you'd rather fix yourself). Auto-clears once the test passes again. Set false to re-enable."),
+      healing_note: external_exports.string().nullable().optional().describe("Optional note explaining why healing was disabled (pass null to clear).")
     }
   },
-  async ({ test_id, name, url, code, template_id, params, secrets, headers, enable_test_mode }) => {
+  async ({ test_id, name, url, code, template_id, params, secrets, headers, enable_test_mode, healing_disabled, healing_note }) => {
     try {
       const body = {};
       if (name !== void 0) body.name = name;
@@ -21303,6 +21305,8 @@ server.registerTool(
       if (secrets !== void 0) body.secrets = secrets;
       if (headers !== void 0) body.headers = headers;
       if (enable_test_mode !== void 0) body.enable_test_mode = enable_test_mode;
+      if (healing_disabled !== void 0) body.healing_disabled = healing_disabled;
+      if (healing_note !== void 0) body.healing_note = healing_note;
       const test = await apiPatch(`/api/tests/${test_id}`, body);
       return { content: [{ type: "text", text: JSON.stringify(test, null, 2) }] };
     } catch (err) {
@@ -21531,6 +21535,131 @@ server.registerTool(
         lines.push("");
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    }
+  }
+);
+var REASON_EXPLANATIONS = {
+  "healing-disabled": "Healing is turned off for this test. Re-enable with update_test healing_disabled=false, or pass force=true to heal anyway.",
+  "not-custom-code": "This is a template-based test with no custom selectors to heal. Layout-change healing only applies to custom-code tests.",
+  "currently-passing": "The test's most recent run passed \u2014 there's nothing to heal.",
+  "not-enough-failures": "The test hasn't failed enough consecutive times yet to confirm a regression (a single/transient failure isn't healed). Wait for the confirmation threshold.",
+  "never-passed": "This test has no prior passing run, so a failure isn't a regression \u2014 it likely needs to be authored/fixed from scratch rather than healed.",
+  "transient-recovered": "On a fresh re-run the test passed, so the earlier failure was transient \u2014 no layout fix needed."
+};
+function renderPageStructure(pageInfo) {
+  if (!pageInfo) return "";
+  const lines = ["", "Current page structure (selectors that exist NOW \u2014 map old selectors to these):"];
+  if (pageInfo.buttons?.length) {
+    lines.push("  Buttons:");
+    for (const b of pageInfo.buttons) lines.push(`    "${b.text}"  \u2192  ${b.selector}`);
+  }
+  if (pageInfo.inputs?.length) {
+    lines.push("  Inputs:");
+    for (const inp of pageInfo.inputs) {
+      const desc = inp.placeholder || inp.name || inp.type || inp.tag;
+      lines.push(`    [${desc}]  \u2192  ${inp.selector}`);
+    }
+  }
+  if (pageInfo.links?.length) {
+    lines.push("  Links:");
+    for (const l of pageInfo.links) lines.push(`    "${l.text}"  \u2192  ${l.selector}`);
+  }
+  return lines.join("\n");
+}
+server.registerTool(
+  "heal_test",
+  {
+    description: "Diagnose and help heal a test that recently started failing because the website's layout changed (e.g. an input id or button selector changed). Accepts a test_id or name. Checks run history to confirm a real regression (was passing, now consistently failing) and that the failure is selector/layout-related \u2014 NOT a site outage, network error, or genuine feature breakage. When healable, it re-runs the test live, captures the CURRENT page structure + screenshots, and returns a brief for you to write new selectors. IMPORTANT: only fix the selectors \u2014 never change the test's logic, step order, assertions, or navigation, and never skip steps. After proposing new code, verify it with validate_test, and only then apply with update_test. If the failing test is actually acceptable, or the user wants to fix it themselves, call update_test healing_disabled=true to stop future suggestions.",
+    readOnlyHint: true,
+    inputSchema: {
+      test_id: external_exports.coerce.number().optional().describe("The test ID to heal (from list_tests). Provide this or name."),
+      name: external_exports.string().optional().describe("Test name (case-insensitive substring match) if you don't have the ID."),
+      reproduce: external_exports.boolean().optional().describe("Re-run the test live to confirm the failure and capture current layout (default: true)."),
+      force: external_exports.boolean().optional().describe("Heal even if healing_disabled is set on the test (default: false).")
+    }
+  },
+  async ({ test_id, name, reproduce, force }) => {
+    try {
+      let resolvedId = test_id;
+      if (!resolvedId) {
+        if (!name) {
+          return { content: [{ type: "text", text: "Provide a test_id or name." }], isError: true };
+        }
+        const data = await apiGet("/api/tests/list");
+        const needle = name.toLowerCase();
+        const matches = data.tests.filter((t) => t.name && t.name.toLowerCase().includes(needle));
+        if (matches.length === 0) {
+          return { content: [{ type: "text", text: `No test found matching "${name}". Use list_tests to see available tests.` }], isError: true };
+        }
+        if (matches.length > 1) {
+          const list = matches.map((t) => `  #${t.id} \u2014 ${t.name} (${t.url})`).join("\n");
+          return { content: [{ type: "text", text: `Multiple tests match "${name}":
+${list}
+
+Re-run heal_test with a specific test_id.` }] };
+        }
+        resolvedId = matches[0].id;
+      }
+      const result = await apiPost(`/api/tests/${resolvedId}/heal`, { mode: "diagnose", reproduce: reproduce !== false });
+      const { test, diagnosis, reproduction } = result;
+      const content = [];
+      const lines = [`Healing diagnosis for "${test.name}" (#${test.id})`, `  URL: ${test.url}`, ""];
+      if (diagnosis.reason === "healing-disabled" && !force) {
+        lines.push("\u26A0 " + REASON_EXPLANATIONS["healing-disabled"]);
+        if (diagnosis.healing_note) lines.push(`  Note: ${diagnosis.healing_note}`);
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+      if (!diagnosis.healable && diagnosis.reason !== "healing-disabled") {
+        lines.push(`Not healable (${diagnosis.reason}).`);
+        if (REASON_EXPLANATIONS[diagnosis.reason]) lines.push(`  ${REASON_EXPLANATIONS[diagnosis.reason]}`);
+        if (diagnosis.reason === "regression" && diagnosis.failure_class && diagnosis.failure_class !== "selector") {
+          lines.push(`  The failure looks like a "${diagnosis.failure_class}" issue, not a layout/selector change, so healing won't help.`);
+          if (diagnosis.failing_step) lines.push(`  Failing step: ${diagnosis.failing_step.name} \u2014 ${diagnosis.failing_step.error || ""}`);
+        }
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+      const reg = diagnosis.regression;
+      if (reg) {
+        lines.push("\u2713 Confirmed regression (layout change suspected):");
+        lines.push(`  Last passed: run #${reg.lastPassRunId} at ${reg.lastPassAt}`);
+        lines.push(`  Started failing: run #${reg.firstFailRunId} at ${reg.firstFailAt}`);
+        lines.push(`  Consecutive failures: ${reg.failureStreak}`);
+      }
+      if (diagnosis.failing_step) {
+        lines.push("", `Failing step: ${diagnosis.failing_step.name}`);
+        if (diagnosis.failing_step.error) lines.push(`  Error: ${diagnosis.failing_step.error}`);
+      }
+      if (reproduction && !reproduction.still_failing) {
+        lines.push("", "On a fresh re-run the test PASSED \u2014 the failure was transient. No fix needed right now.");
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+      const fullTest = await apiGet(`/api/tests/${test.id}`);
+      lines.push("", "Current test code:", "```javascript", fullTest.code || "(no code)", "```");
+      if (reproduction?.page_info) lines.push(renderPageStructure(reproduction.page_info));
+      lines.push(
+        "",
+        "\u2500\u2500 How to heal this test \u2500\u2500",
+        "1. Propose updated code that changes ONLY the broken selector(s) to match the current page structure above.",
+        "   \u2022 Do NOT change the test's logic, step order, assertions, waits, or navigation.",
+        "   \u2022 Do NOT skip/remove steps or add workarounds (no JS .click(), no waitForTimeout).",
+        "2. Verify your new code with validate_test (code + url). Iterate until it passes.",
+        "3. Only after it passes, apply it with update_test (confirm with the user first).",
+        "",
+        "If this failing test is actually acceptable, or the user wants to fix it themselves, call",
+        "update_test healing_disabled=true (optionally with healing_note) to stop future suggestions."
+      );
+      content.push({ type: "text", text: lines.join("\n") });
+      if (reproduction?.screenshots) {
+        for (const [stepName, base642] of Object.entries(reproduction.screenshots)) {
+          if (base642) {
+            content.push({ type: "text", text: `Screenshot: ${stepName}` });
+            content.push({ type: "image", data: base642, mimeType: "image/png" });
+          }
+        }
+      }
+      return { content };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
     }
