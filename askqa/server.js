@@ -6,7 +6,11 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -20964,6 +20968,9 @@ function buildTestRunText(testRun, testName) {
     lines.push(`  Use get_test_screenshots with test_run_id ${testRun.id} to view screenshots.`);
   }
   lines.push(`  View details: ${testRun.details_url || `${WEBSITE_URL}/runs/${testRun.id}`}`);
+  if (testRun.trace_viewer_url) {
+    lines.push(`  View trace: ${testRun.trace_viewer_url}`);
+  }
   return lines.join("\n");
 }
 async function buildTestRunScreenshots(testRun) {
@@ -21183,7 +21190,7 @@ server.registerTool(
 server.registerTool(
   "validate_test",
   {
-    description: "Dry-run custom Playwright test code against a URL. Returns execution results, screenshots, and page structure for debugging. Steps continue even on failure to maximize debug signal. Use this to iterate on code before calling create_test.",
+    description: "Start here when writing a new test. Dry-runs Playwright code against a URL without saving it \u2014 returns step results, screenshots, and page structure. Steps continue even on failure for maximum debug signal. Iterate here until the test passes, then call create_test to save it.",
     readOnlyHint: true,
     inputSchema: {
       code: external_exports.string().describe("Custom Playwright test code. Must define an async function test({ page, step, log })."),
@@ -21192,24 +21199,28 @@ server.registerTool(
   },
   async ({ code, url }) => {
     try {
-      const result = await apiPost("/api/tests/validate", { code, url });
+      const { test_run_id } = await apiPost("/api/tests/validate", { code, url });
+      const testRun = await pollTestRun(test_run_id);
+      const runResult = testRun.result || {};
       const content = [];
-      const icon = result.status === "passed" ? "\u2713" : "\u2717";
-      const lines = [`${icon} Validation: ${result.status}`];
-      if (result.durationMs) lines.push(`  Duration: ${(result.durationMs / 1e3).toFixed(1)}s`);
-      if (result.error) lines.push(`  Error: ${result.error}`);
-      for (const step of result.steps || []) {
+      const overallStatus = runResult.status || (testRun.status === "completed" ? "passed" : "failed");
+      const icon = overallStatus === "passed" ? "\u2713" : "\u2717";
+      const lines = [`${icon} Validation: ${overallStatus}`];
+      if (runResult.durationMs) lines.push(`  Duration: ${(runResult.durationMs / 1e3).toFixed(1)}s`);
+      if (testRun.error) lines.push(`  Error: ${testRun.error}`);
+      if (runResult.error) lines.push(`  Error: ${runResult.error}`);
+      for (const step of runResult.steps || []) {
         const stepIcon = step.status === "passed" ? "\u2713" : step.status === "failed" ? "\u2717" : "?";
         lines.push(`  ${stepIcon} ${step.name} \u2014 ${step.status}`);
         if (step.error) lines.push(`    Error: ${step.error}`);
       }
-      if (result.logs?.length) {
+      if (runResult.logs?.length) {
         lines.push("  Logs:");
-        for (const msg of result.logs) lines.push(`    ${msg}`);
+        for (const msg of runResult.logs) lines.push(`    ${msg}`);
       }
       content.push({ type: "text", text: lines.join("\n") });
-      if (result.pageInfo) {
-        const info = result.pageInfo;
+      if (runResult.pageInfo) {
+        const info = runResult.pageInfo;
         const infoLines = ["", "Page structure (for fixing selectors):"];
         if (info.buttons?.length) {
           infoLines.push("  Buttons:");
@@ -21228,13 +21239,9 @@ server.registerTool(
         }
         content.push({ type: "text", text: infoLines.join("\n") });
       }
-      if (result.screenshots) {
-        for (const [stepName, base642] of Object.entries(result.screenshots)) {
-          if (base642) {
-            content.push({ type: "text", text: `Screenshot: ${stepName}` });
-            content.push({ type: "image", data: base642, mimeType: "image/png" });
-          }
-        }
+      if (testRun.execution_id) {
+        const screenshots = await buildTestRunScreenshots(testRun);
+        content.push(...screenshots);
       }
       return { content };
     } catch (err) {
