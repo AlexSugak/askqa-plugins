@@ -21828,6 +21828,100 @@ Update your backend configuration to use this new value. The old value no longer
     }
   }
 );
+server.registerTool(
+  "get_shared_run",
+  {
+    description: "Fetch a publicly shared test run by its share URL or token. No API key required \u2014 anyone with the link can call this. Returns run results, step details, and the original test config (test_code, test_template_id, test_params, test_url) so you can recreate the test in your own account using create_test.",
+    readOnlyHint: true,
+    inputSchema: {
+      share_url_or_token: external_exports.string().describe("The share URL (https://askqa.ai/r/TOKEN) or just the token")
+    }
+  },
+  async ({ share_url_or_token }) => {
+    try {
+      const token = share_url_or_token.includes("/") ? share_url_or_token.split("/").pop() : share_url_or_token;
+      const res = await fetch(`${API_URL}/api/test-runs/shared/${encodeURIComponent(token)}`);
+      if (res.status === 404) {
+        return { content: [{ type: "text", text: "Shared run not found. The link may be invalid or sharing may have been revoked." }], isError: true };
+      }
+      if (!res.ok) {
+        throw new Error(`API ${res.status}: ${await res.text()}`);
+      }
+      const run = await res.json();
+      const lines = [
+        `Run #${run.id} \u2014 ${run.test_name || "Unnamed test"} | ${run.status}`,
+        `URL: ${run.test_url || "unknown"}`,
+        `Duration: ${run.result?.durationMs ? (run.result.durationMs / 1e3).toFixed(1) + "s" : "N/A"}`,
+        ""
+      ];
+      if (run.result?.steps?.length) {
+        lines.push("Steps:");
+        for (const s of run.result.steps) {
+          lines.push(`  ${s.status === "passed" ? "\u2713" : "\u2717"} ${s.name}${s.error ? " \u2014 " + s.error : ""}`);
+        }
+        lines.push("");
+      }
+      if (run.test_code) {
+        lines.push("Test code (use create_test to recreate in your account):");
+        lines.push("```javascript");
+        lines.push(run.test_code);
+        lines.push("```");
+      } else if (run.test_template_id) {
+        lines.push(`Template: ${run.test_template_id}`);
+        if (run.test_params && Object.keys(run.test_params).length) {
+          lines.push(`Params: ${JSON.stringify(run.test_params)}`);
+        }
+      }
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    }
+  }
+);
+server.registerTool(
+  "share_test_run",
+  {
+    description: "Make a test run publicly shareable. Returns a share_url that anyone can open without logging in. Calling again on an already-shared run returns the same URL. Use unshare_test_run to revoke access.",
+    inputSchema: {
+      test_run_id: external_exports.coerce.number().describe("The test run ID to share")
+    }
+  },
+  async ({ test_run_id }) => {
+    try {
+      const data = await apiPost(`/api/test-runs/${test_run_id}/share`, {});
+      return { content: [{ type: "text", text: `Share URL: ${data.share_url}
+
+Anyone with this link can view the test run results without logging in.` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    }
+  }
+);
+server.registerTool(
+  "unshare_test_run",
+  {
+    description: "Revoke public sharing for a test run. The share URL will stop working immediately.",
+    destructiveHint: true,
+    inputSchema: {
+      test_run_id: external_exports.coerce.number().describe("The test run ID to stop sharing")
+    }
+  },
+  async ({ test_run_id }) => {
+    try {
+      const res = await fetch(`${API_URL}/api/test-runs/${test_run_id}/share`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${API_KEY}` }
+      });
+      if (!res.ok && res.status !== 204) {
+        const text = await res.text();
+        throw new Error(`API ${res.status}: ${text}`);
+      }
+      return { content: [{ type: "text", text: `Sharing disabled for run #${test_run_id}. The public link no longer works.` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    }
+  }
+);
 var transport = new StdioServerTransport();
 await server.connect(transport);
 console.error("AskQA MCP server running on stdio");
