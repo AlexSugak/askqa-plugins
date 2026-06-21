@@ -21049,7 +21049,7 @@ server.registerTool(
 server.registerTool(
   "detect_tests",
   {
-    description: "Start here when a user wants to monitor a new site. Screenshots the URL and uses AI to suggest 2-3 meaningful e2e tests tailored to that specific site (e.g. checkout flow, login, add to cart). Returns a page_summary and a list of suggestions with names, descriptions, and step sketches. After calling this: present the suggestions to the user, let them pick which ones to add, then YOU write the Playwright test code for each chosen test, validate with validate_test, iterate until it passes, then save with create_test.",
+    description: "Start here when a user wants to monitor a new site. Screenshots the URL and uses AI to suggest 2-3 meaningful e2e tests tailored to that specific site (e.g. checkout flow, login, add to cart). Returns a page_summary and a list of suggestions with names, descriptions, and step sketches. After calling this: present the suggestions to the user, let them pick which ones to add, then YOU write the Playwright test code for each chosen test, validate with validate_test, iterate until it passes, then save with create_test. NAVIGATION RULE: test code must only call page.goto() once, to the site root/homepage. All further navigation (to product pages, category pages, etc.) must be through real user interactions \u2014 menu hovers, link clicks, form submissions. Never use page.goto() to jump directly to a sub-page or product URL.",
     readOnlyHint: true,
     inputSchema: {
       url: external_exports.string().describe("The website URL to analyze (e.g. 'https://my-store.com')")
@@ -21099,7 +21099,7 @@ server.registerTool(
 server.registerTool(
   "create_test",
   {
-    description: "Save a validated test. IMPORTANT: For code-based tests, only call this AFTER validate_test confirms the test passes \u2014 never save untested code. Use template_id for universal templates (e.g. 'quick-checks') that work on any site without validation. Use code for custom tests after running detect_tests \u2192 write code \u2192 validate_test. Provide template_id or code, not both.",
+    description: "Save a validated test. IMPORTANT: For code-based tests, only call this AFTER validate_test confirms the test passes \u2014 never save untested code. Use template_id for universal templates (e.g. 'quick-checks') that work on any site without validation. Use code for custom tests after running detect_tests \u2192 write code \u2192 validate_test. Provide template_id or code, not both. NAVIGATION RULE: test code must only call page.goto() once, to the site root/homepage. All further navigation must be through real user interactions \u2014 menu hovers, link clicks, form submissions. Never use page.goto() to jump directly to a sub-page or product URL.",
     destructiveHint: true,
     inputSchema: {
       name: external_exports.string().describe("A name for this test (e.g. 'Homepage health check')"),
@@ -21185,16 +21185,17 @@ server.registerTool(
 server.registerTool(
   "validate_test",
   {
-    description: "REQUIRED before create_test for any code-based test. Dry-runs Playwright code against a URL without saving it \u2014 returns step results, screenshots, and page structure. Steps continue even on failure for maximum debug signal. Iterate here until ALL steps pass, then call create_test to save it.",
+    description: "REQUIRED before create_test for any code-based test. Dry-runs Playwright code against a URL without saving it \u2014 returns step results, screenshots, and page structure. Steps continue even on failure for maximum debug signal. Iterate here until ALL steps pass, then call create_test to save it. NAVIGATION RULE: test code must only call page.goto() once, to the site root/homepage (the url parameter). All further navigation must be through real user interactions \u2014 menu hovers, link clicks, form submissions. Never use page.goto() to jump directly to a sub-page, product URL, or collection path.",
     readOnlyHint: true,
     inputSchema: {
       code: external_exports.string().describe("Custom Playwright test code. Must define an async function test({ page, step, log })."),
-      url: external_exports.string().describe("The target URL to test against (e.g. 'https://example.com')")
+      url: external_exports.string().describe("The target URL to test against (e.g. 'https://example.com')"),
+      timeout: external_exports.coerce.number().optional().describe("Maximum seconds the test is allowed to run (default: 120, max: 300). Increase for tests with many page navigations.")
     }
   },
-  async ({ code, url }) => {
+  async ({ code, url, timeout }) => {
     try {
-      const { test_run_id } = await apiPost("/api/tests/validate", { code, url });
+      const { test_run_id } = await apiPost("/api/tests/validate", { code, url, timeout });
       const testRun = await pollTestRun(test_run_id);
       const runResult = testRun.result || {};
       const content = [];
@@ -21212,6 +21213,9 @@ server.registerTool(
       if (runResult.logs?.length) {
         lines.push("  Logs:");
         for (const msg of runResult.logs) lines.push(`    ${msg}`);
+      }
+      if (testRun.trace_viewer_url) {
+        lines.push(`  Trace: ${testRun.trace_viewer_url}`);
       }
       content.push({ type: "text", text: lines.join("\n") });
       if (runResult.pageInfo) {

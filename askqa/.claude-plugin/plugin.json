@@ -1,6 +1,6 @@
 {
   "name": "askqa",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "AskQA skills — set up notifications and monitoring for your websites",
   "mcpServers": {
     "askqa": {
