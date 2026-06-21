@@ -21109,10 +21109,11 @@ server.registerTool(
       code: external_exports.string().optional().describe("Custom Playwright test code. Must define an async function test({ page, step, log, secrets }). Omit if using template_id."),
       secrets: external_exports.record(external_exports.string()).optional().describe("Optional key-value secrets (e.g. { email: '...', password: '...' } or { api_key: '...' }). Encrypted at rest, never returned in API responses."),
       headers: external_exports.record(external_exports.string()).optional().describe("Optional HTTP headers injected into requests to the target domain (e.g. { 'X-Test-Secret': 'abc' })"),
-      enable_test_mode: external_exports.boolean().optional().describe("Send X-AskQA-Secret header to the target site, enabling test mode on sites that support it (default: true)")
+      enable_test_mode: external_exports.boolean().optional().describe("Send X-AskQA-Secret header to the target site, enabling test mode on sites that support it (default: true)"),
+      test_timeout: external_exports.coerce.number().optional().describe("Maximum seconds the scheduler is allowed to run this test (default: 120, max: 300). Set this when the test has many page navigations and validate_test needed a timeout > 120 to pass.")
     }
   },
-  async ({ name, url, template_id, params, code, secrets, headers, enable_test_mode }) => {
+  async ({ name, url, template_id, params, code, secrets, headers, enable_test_mode, test_timeout }) => {
     try {
       const body = { name, url };
       if (template_id) body.template_id = template_id;
@@ -21121,6 +21122,7 @@ server.registerTool(
       if (secrets) body.secrets = secrets;
       if (headers) body.headers = headers;
       if (enable_test_mode !== void 0) body.enable_test_mode = enable_test_mode;
+      if (test_timeout !== void 0) body.test_timeout = test_timeout;
       const test = await apiPost("/api/tests/create", body);
       return { content: [{ type: "text", text: JSON.stringify(test, null, 2) }] };
     } catch (err) {
@@ -21185,17 +21187,34 @@ server.registerTool(
 server.registerTool(
   "validate_test",
   {
-    description: "REQUIRED before create_test for any code-based test. Dry-runs Playwright code against a URL without saving it \u2014 returns step results, screenshots, and page structure. Steps continue even on failure for maximum debug signal. Iterate here until ALL steps pass, then call create_test to save it. NAVIGATION RULE: test code must only call page.goto() once, to the site root/homepage (the url parameter). All further navigation must be through real user interactions \u2014 menu hovers, link clicks, form submissions. Never use page.goto() to jump directly to a sub-page, product URL, or collection path.",
+    description: `REQUIRED before create_test for any code-based test. Dry-runs Playwright code against a URL without saving it \u2014 returns step results, screenshots, and page structure. Steps continue even on failure for maximum debug signal. Iterate here until ALL steps pass, then call create_test to save it.
+
+NAVIGATION RULE: test code must only call page.goto() once, to the site root/homepage (the url parameter). All further navigation must be through real user interactions \u2014 menu hovers, link clicks, form submissions. Never use page.goto() to jump directly to a sub-page, product URL, or collection path.
+
+ONCE ALL STEPS PASS \u2014 before calling create_test, review the code against these quality checks and fix any violations:
+
+1. NO waitForLoadState after clicks on SSR sites (Shopify, Next.js, most e-commerce): these pages render HTML server-side, so elements are in the initial response. Waiting for domcontentloaded after a click adds seconds of dead time. Instead: let the next step's element waitFor() serve as the nav signal, OR use page.waitForURL(/pattern/) when you need to confirm the URL changed before running JS (e.g. page.evaluate).
+
+2. NO waitForTimeout \u2014 never use page.waitForTimeout(ms). Always wait for a specific condition: element visibility, URL change, or network idle.
+
+3. NO JS clicks \u2014 never use element.evaluate(el => el.click()). Use locator.click() which simulates real mouse events. For elements covered by sticky headers or overlays, use click({ force: true }) instead of JS clicks.
+
+4. DELAY-TRIGGERED POPUPS need dual guards \u2014 scroll-triggered or time-delayed popups (e.g. Klaviyo email capture) often fire after the dedicated dismiss step has already moved on. Add a second guard at the start of the next interaction step: check isVisible() and dismiss if present.
+
+5. POPUP DISMISS TIMEOUTS \u2014 keep popup waitFor timeouts short (4\u20136 s). A popup that doesn't appear within 6 s is unlikely to appear before the next interaction anyway. Don't set long timeouts just to be safe \u2014 it burns time on every run.
+
+6. COLLECTION CARD CLICKS \u2014 on collection/category pages, product image areas are often covered by a full-card anchor overlay (e.g. a.media_link on Shopify). If normal click fails with a coverage error, use click({ force: true }). Never use page.goto() to skip to the product URL.`,
     readOnlyHint: true,
     inputSchema: {
       code: external_exports.string().describe("Custom Playwright test code. Must define an async function test({ page, step, log })."),
       url: external_exports.string().describe("The target URL to test against (e.g. 'https://example.com')"),
-      timeout: external_exports.coerce.number().optional().describe("Maximum seconds the test is allowed to run (default: 120, max: 300). Increase for tests with many page navigations.")
+      timeout: external_exports.coerce.number().optional().describe("Maximum seconds the test is allowed to run (default: 120, max: 300). Increase for tests with many page navigations."),
+      capture_trace: external_exports.boolean().optional().describe("Enable Playwright trace recording (default: false). Enable when step output and screenshots are not enough to diagnose a failure \u2014 the trace includes full DOM snapshots, network timeline, and every action. Adds memory overhead; avoid on tests with many page navigations unless needed.")
     }
   },
-  async ({ code, url, timeout }) => {
+  async ({ code, url, timeout, capture_trace }) => {
     try {
-      const { test_run_id } = await apiPost("/api/tests/validate", { code, url, timeout });
+      const { test_run_id } = await apiPost("/api/tests/validate", { code, url, timeout, capture_trace });
       const testRun = await pollTestRun(test_run_id);
       const runResult = testRun.result || {};
       const content = [];
@@ -21296,11 +21315,12 @@ server.registerTool(
       secrets: external_exports.record(external_exports.string()).nullable().optional().describe("Updated secrets (pass null to clear). Encrypted at rest, never returned in API responses \u2014 must be provided again when updating a test that uses secrets."),
       headers: external_exports.record(external_exports.string()).nullable().optional().describe("Updated HTTP headers (pass null to clear)"),
       enable_test_mode: external_exports.boolean().optional().describe("Send X-AskQA-Secret header to the target site, enabling test mode on sites that support it (default: true)"),
+      test_timeout: external_exports.coerce.number().nullable().optional().describe("Maximum seconds the scheduler is allowed to run this test (default: 120, max: 300). Set when validate_test needed a timeout > 120 to pass. Pass null to reset to default."),
       healing_disabled: external_exports.boolean().optional().describe("Set true to stop AskQA from suggesting fixes for this test (e.g. a failing test that's acceptable as-is, or one you'd rather fix yourself). Auto-clears once the test passes again. Set false to re-enable."),
       healing_note: external_exports.string().nullable().optional().describe("Optional note explaining why healing was disabled (pass null to clear).")
     }
   },
-  async ({ test_id, name, url, code, template_id, params, secrets, headers, enable_test_mode, healing_disabled, healing_note }) => {
+  async ({ test_id, name, url, code, template_id, params, secrets, headers, enable_test_mode, test_timeout, healing_disabled, healing_note }) => {
     try {
       const body = {};
       if (name !== void 0) body.name = name;
@@ -21311,6 +21331,7 @@ server.registerTool(
       if (secrets !== void 0) body.secrets = secrets;
       if (headers !== void 0) body.headers = headers;
       if (enable_test_mode !== void 0) body.enable_test_mode = enable_test_mode;
+      if (test_timeout !== void 0) body.test_timeout = test_timeout;
       if (healing_disabled !== void 0) body.healing_disabled = healing_disabled;
       if (healing_note !== void 0) body.healing_note = healing_note;
       const test = await apiPatch(`/api/tests/${test_id}`, body);
