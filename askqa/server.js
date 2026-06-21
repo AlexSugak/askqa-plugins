@@ -20921,6 +20921,16 @@ async function pollTestRun(testRunId, maxWaitMs = 3e5) {
   }
   throw new Error(`Test run ${testRunId} did not finish within ${maxWaitMs / 1e3}s`);
 }
+async function pollJob(jobId, maxWaitMs = 3e5) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const job = await apiGet(`/api/jobs/${jobId}`);
+    if (job.status === "done") return job.result;
+    if (job.status === "failed") throw new Error(job.error || "Job failed");
+    await sleep(2e3);
+  }
+  throw new Error(`Job ${jobId} did not finish within ${maxWaitMs / 1e3}s`);
+}
 async function fetchScreenshot(url) {
   try {
     const res = await fetch(url, {
@@ -21002,23 +21012,20 @@ var server = new McpServer(
       "If the latest run passed, confirm it's working. If it failed, report what failed.",
       "Only call run_test if the user explicitly asks to run a new test \u2014 checking status should use existing results.",
       "",
-      "When the user asks to monitor a site, use list_templates to see available templates.",
-      "There are two kinds of templates:",
+      "When the user asks to monitor a site or set up tests, use detect_tests first.",
+      "detect_tests screenshots the site and asks AI to suggest 2-3 meaningful e2e tests.",
+      "The user then picks which tests to add. You write the code, validate with validate_test,",
+      "iterate until all steps pass, then save with create_test.",
       "",
-      "1. Universal templates (e.g. 'quick-checks') \u2014 work on any website with no configuration.",
-      "   Just call create_test with template_id and you're done.",
-      "",
-      "2. Site-specific templates (e.g. 'shopify-cart') \u2014 need to discover CSS selectors for the target site.",
-      "   Call detect_template first to probe the site and generate standalone Playwright code,",
-      "   then call create_test with that generated code (not the template_id).",
-      "   Templates that support detection have supportsDetection: true in list_templates output."
+      "For universal templates (e.g. 'quick-checks') that work on any site with no config,",
+      "you can call create_test with template_id directly without detect_tests."
     ].join("\n")
   }
 );
 server.registerTool(
   "list_templates",
   {
-    description: "List available test templates with usage hints. Some templates work directly with create_test (universal), others need detect_template first to discover site-specific selectors (site-specific).",
+    description: "List available universal test templates (e.g. 'quick-checks') that work on any site with no configuration. For custom site-specific tests, use detect_tests instead.",
     readOnlyHint: true
   },
   async () => {
@@ -21030,12 +21037,7 @@ server.registerTool(
         lines.push(`  Name: ${t.name}`);
         lines.push(`  Description: ${t.description}`);
         lines.push(`  Steps: ${t.steps.join(", ")}`);
-        if (t.supportsCodeGeneration) {
-          lines.push(`  supportsDetection: true`);
-          lines.push(`  Usage: call detect_template \u2192 get generated code \u2192 create_test with code`);
-        } else {
-          lines.push(`  Usage: call create_test with template_id="${t.id}" directly`);
-        }
+        lines.push(`  Usage: call create_test with template_id="${t.id}" directly`);
         lines.push("");
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -21045,58 +21047,50 @@ server.registerTool(
   }
 );
 server.registerTool(
-  "detect_template",
+  "detect_tests",
   {
-    description: "Run template detection against a URL to discover selectors and generate custom test code. This is the fastest way to create a custom test \u2014 detection runs the template flow against the site, discovers which CSS selectors work, and generates standalone Playwright test code with those selectors baked in. Use the generated code with create_test to save it.",
+    description: "Start here when a user wants to monitor a new site. Screenshots the URL and uses AI to suggest 2-3 meaningful e2e tests tailored to that specific site (e.g. checkout flow, login, add to cart). Returns a page_summary and a list of suggestions with names, descriptions, and step sketches. After calling this: present the suggestions to the user, let them pick which ones to add, then YOU write the Playwright test code for each chosen test, validate with validate_test, iterate until it passes, then save with create_test.",
     readOnlyHint: true,
     inputSchema: {
-      template_id: external_exports.string().describe("Template ID from list_templates (e.g. 'shopify-cart')"),
-      url: external_exports.string().describe("The target URL to detect against (e.g. 'https://my-store.myshopify.com')")
+      url: external_exports.string().describe("The website URL to analyze (e.g. 'https://my-store.com')")
     }
   },
-  async ({ template_id, url }) => {
+  async ({ url }) => {
     try {
-      const result = await apiPost(`/api/tests/templates/${template_id}/detect`, { url });
-      const content = [];
+      const { job_id } = await apiPost("/api/tests/suggest", { url });
+      const result = await pollJob(job_id);
       const lines = [];
-      const statusLabel = result.status === "passed" ? "PASSED" : "FAILED";
-      lines.push(`Detection: ${statusLabel}`);
-      lines.push("");
-      if (result.steps) {
-        lines.push("Steps:");
-        for (const step of result.steps) {
-          const icon = step.status === "passed" ? "+" : "x";
-          lines.push(`  ${icon} ${step.name} \u2014 ${step.status}`);
-          if (step.error) lines.push(`    Error: ${step.error}`);
-        }
+      if (result.page_summary) {
+        lines.push(`Site: ${result.page_summary}`);
         lines.push("");
       }
-      if (result.selectors) {
-        lines.push("Discovered selectors:");
-        for (const [key, value] of Object.entries(result.selectors)) {
-          lines.push(`  ${key}: ${value}`);
-        }
+      const suggestions = result.suggestions || [];
+      if (suggestions.length === 0) {
+        lines.push("No suggestions available. You can still write a custom test using screenshot_url to inspect the page.");
+      } else {
+        lines.push(`Suggested tests (${suggestions.length}):`);
         lines.push("");
-      }
-      if (result.code) {
-        lines.push("Generated test code (use with create_test):");
-        lines.push("```");
-        lines.push(result.code);
-        lines.push("```");
-      }
-      content.push({ type: "text", text: lines.join("\n") });
-      if (result.steps) {
-        for (const step of result.steps) {
-          if (!step.screenshot) continue;
-          const screenshotUrl = `${API_URL}/api/screenshots/${result.executionId}/${step.screenshot}`;
-          const base642 = await fetchScreenshot(screenshotUrl);
-          if (base642) {
-            content.push({ type: "text", text: `Screenshot: ${step.name}` });
-            content.push({ type: "image", data: base642, mimeType: "image/png" });
+        for (let i = 0; i < suggestions.length; i++) {
+          const s = suggestions[i];
+          lines.push(`${i + 1}. ${s.name}`);
+          lines.push(`   What it tests: ${s.description}`);
+          lines.push(`   Why it matters: ${s.why}`);
+          if (s.steps && s.steps.length > 0) {
+            lines.push(`   Steps:`);
+            for (const step of s.steps) {
+              lines.push(`     - ${step}`);
+            }
           }
+          lines.push("");
         }
+        lines.push("Next steps:");
+        lines.push("1. Ask the user which test(s) they want to add");
+        lines.push("2. Use screenshot_url to inspect the page and discover selectors");
+        lines.push("3. Write the Playwright test code");
+        lines.push("4. Validate with validate_test \u2014 iterate until ALL steps pass");
+        lines.push("5. Save with create_test");
       }
-      return { content };
+      return { content: [{ type: "text", text: lines.join("\n") }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
     }
@@ -21105,7 +21099,7 @@ server.registerTool(
 server.registerTool(
   "create_test",
   {
-    description: "Create a saved test. Use template_id for universal templates (e.g. 'quick-checks') that work on any site. Use code for custom tests or for site-specific templates after running detect_template. Provide template_id or code, not both.",
+    description: "Save a validated test. IMPORTANT: For code-based tests, only call this AFTER validate_test confirms the test passes \u2014 never save untested code. Use template_id for universal templates (e.g. 'quick-checks') that work on any site without validation. Use code for custom tests after running detect_tests \u2192 write code \u2192 validate_test. Provide template_id or code, not both.",
     destructiveHint: true,
     inputSchema: {
       name: external_exports.string().describe("A name for this test (e.g. 'Homepage health check')"),
@@ -21145,7 +21139,8 @@ server.registerTool(
   },
   async ({ url }) => {
     try {
-      const result = await apiPost("/api/tests/screenshot", { url });
+      const { job_id } = await apiPost("/api/tests/screenshot", { url });
+      const result = await pollJob(job_id);
       const content = [];
       const info = result.pageInfo || {};
       const lines = [`Page: ${info.title || "(no title)"}`, `URL: ${info.url || url}`, ""];
@@ -21190,7 +21185,7 @@ server.registerTool(
 server.registerTool(
   "validate_test",
   {
-    description: "Start here when writing a new test. Dry-runs Playwright code against a URL without saving it \u2014 returns step results, screenshots, and page structure. Steps continue even on failure for maximum debug signal. Iterate here until the test passes, then call create_test to save it.",
+    description: "REQUIRED before create_test for any code-based test. Dry-runs Playwright code against a URL without saving it \u2014 returns step results, screenshots, and page structure. Steps continue even on failure for maximum debug signal. Iterate here until ALL steps pass, then call create_test to save it.",
     readOnlyHint: true,
     inputSchema: {
       code: external_exports.string().describe("Custom Playwright test code. Must define an async function test({ page, step, log })."),
@@ -21862,7 +21857,7 @@ server.registerTool(
         lines.push("");
       }
       if (run.test_code) {
-        lines.push("Test code (use create_test to recreate in your account):");
+        lines.push("Test code (validate with validate_test first, then create_test to save):");
         lines.push("```javascript");
         lines.push(run.test_code);
         lines.push("```");
