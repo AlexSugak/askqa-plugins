@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.2",
   "name": "askqa",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "display_name": "AskQA",
   "author": {
     "name": "AskQA"
